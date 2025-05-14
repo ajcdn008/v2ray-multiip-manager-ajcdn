@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# --- 为每个公网IP添加一个VMess用户，生成二维码 ---
+# --- 为指定 IP 添加一个 VMess 用户，含二维码 ---
 
 CONFIG=""
 POSSIBLE_PATHS=(
@@ -22,57 +22,55 @@ if [ -z "$CONFIG" ]; then
   exit 1
 fi
 
-# 检查 jq 是否安装
-if ! command -v jq &> /dev/null; then
-  echo "[📦] 正在安装 jq..."
-  if command -v yum &> /dev/null; then
-    yum install -y jq || exit 1
-  elif command -v apt &> /dev/null; then
-    apt update && apt install -y jq || exit 1
-  else
-    echo "❌ 不支持的系统，请手动安装 jq"
-    exit 1
-  fi
-fi
-
-# 检查 qrencode 是否安装
-if ! command -v qrencode &> /dev/null; then
-  echo "[📦] 正在安装二维码生成工具 qrencode..."
-  if command -v yum &> /dev/null; then
-    yum install -y qrencode || exit 1
-  elif command -v apt &> /dev/null; then
-    apt update && apt install -y qrencode || exit 1
-  else
-    echo "❌ 不支持的系统，请手动安装 qrencode"
-    exit 1
-  fi
-fi
-
-# 获取所有公网IP（非127.0.0.1，非内网）
-IP_LIST=$(ip -4 addr | grep inet | grep -vE '127|192|10\.|172\.(1[6-9]|2[0-9]|3[0-1])' | awk '{print $2}' | cut -d'/' -f1)
-
-if [ -z "$IP_LIST" ]; then
-  echo "❌ 未检测到公网IP，请确认服务器绑定了多个 IP"
+# 获取参数（指定IP）
+TARGET_IP="$1"
+if [ -z "$TARGET_IP" ]; then
+  echo "用法: bash add_multiip.sh 你的公网IP"
   exit 1
 fi
 
-VMESS_LINKS=""
+# 检查依赖
+for cmd in jq qrencode; do
+  if ! command -v $cmd &>/dev/null; then
+    echo "[📦] 安装依赖：$cmd..."
+    if command -v apt &>/dev/null; then
+      apt update && apt install -y $cmd
+    elif command -v yum &>/dev/null; then
+      yum install -y $cmd
+    else
+      echo "❌ 请手动安装 $cmd"
+      exit 1
+    fi
+  fi
 
-for TARGET_IP in $IP_LIST; do
-  echo -e "🔧 为 IP [$TARGET_IP] 添加 VPN 用户..."
-  UUID=$(cat /proc/sys/kernel/random/uuid)
-  PORT=$((20000 + RANDOM % 40000))
+  if ! command -v $cmd &>/dev/null; then
+    echo "❌ $cmd 安装失败"
+    exit 1
+  fi
 
-  jq --arg uuid "$UUID" --argjson port "$PORT" --arg listen "$TARGET_IP" \
-  '.inbounds += [{
-    "port": $port,
-    "listen": $listen,
-    "protocol": "vmess",
-    "settings": { "clients": [{ "id": $uuid, "alterId": 0 }] },
-    "streamSettings": { "network": "tcp", "security": "none" }
-  }]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
+  echo "✅ $cmd 已安装"
+done
 
-  VMESS_JSON=$(cat <<EOF
+UUID=$(cat /proc/sys/kernel/random/uuid)
+PORT=$((20000 + RANDOM % 40000))
+
+jq --arg uuid "$UUID" --argjson port "$PORT" --arg listen "$TARGET_IP" \
+'.inbounds += [{
+  "port": $port,
+  "listen": $listen,
+  "protocol": "vmess",
+  "settings": {
+    "clients": [{ "id": $uuid, "alterId": 0 }]
+  },
+  "streamSettings": {
+    "network": "tcp",
+    "security": "none"
+  }
+}]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
+
+(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
+
+VMESS_JSON=$(cat <<EOF
 {
   "v": "2",
   "ps": "$TARGET_IP:$PORT",
@@ -88,16 +86,13 @@ for TARGET_IP in $IP_LIST; do
 }
 EOF
 )
-  VMESS_LINK="vmess://$(echo "$VMESS_JSON" | base64 -w 0)"
-  echo "✅ 已添加：$TARGET_IP:$PORT UUID=$UUID"
-  echo "$VMESS_LINK" >> /root/vmess_links.txt
-  qrencode -o "/root/${TARGET_IP//./_}_$PORT.png" "$VMESS_LINK"
-done
+VMESS_LINK="vmess://$(echo "$VMESS_JSON" | base64 -w 0)"
+echo "$VMESS_LINK" >> /root/vmess_links.txt
+qrencode -o "/root/${TARGET_IP//./_}_$PORT.png" "$VMESS_LINK"
 
-(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
-
-echo -e "\n🎉 所有公网 IP 用户已创建完毕，可用以下命令管理："
-echo "📄 查看用户：bash /root/list_users.sh"
-echo "❌ 删除用户：bash /root/delete_user.sh"
-echo "🖼️ 所有二维码保存在 /root/*.png 中"
-echo "📎 所有 vmess 链接保存在 /root/vmess_links.txt"
+echo "✅ 添加成功！"
+echo "IP: $TARGET_IP"
+echo "端口: $PORT"
+echo "UUID: $UUID"
+echo -e "🔗 VMess 链接：\n$VMESS_LINK"
+echo "🖼️ 二维码已保存：/root/${TARGET_IP//./_}_$PORT.png"
