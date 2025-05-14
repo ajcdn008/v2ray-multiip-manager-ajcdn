@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# --- 自动识别服务器所有公网 IP 并批量添加 V2Ray 用户（兼容 secondary IP）---
+# --- 自动识别服务器所有公网 IP 并批量添加 V2Ray 用户（兼容 secondary IP）+ 生成 VMess 链接 ---
 
 CONFIG=""
 POSSIBLE_PATHS=(
@@ -22,7 +22,6 @@ if [ -z "$CONFIG" ]; then
   exit 1
 fi
 
-# 改进后的 IP 识别逻辑，兼容 secondary IP
 IP_LIST=$(ip -4 addr | grep -oP 'inet \K[0-9.]+(?=/)' | grep -vE '^(127|10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)')
 
 if [ -z "$IP_LIST" ]; then
@@ -32,7 +31,6 @@ if [ -z "$IP_LIST" ]; then
   exit 1
 fi
 
-# 安装 jq（如未安装）
 if ! command -v jq &> /dev/null; then
   echo "[📦] 正在安装 jq..."
   if command -v yum &> /dev/null; then
@@ -65,18 +63,36 @@ for IP in $IP_LIST; do
   }]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
 
   echo "✅ 已添加：$IP:$PORT UUID=$UUID"
+
+  # 生成 VMess 链接 JSON
+  VMESS_JSON=$(cat <<EOF
+{
+  "v": "2",
+  "ps": "$IP-$PORT",
+  "add": "$IP",
+  "port": "$PORT",
+  "id": "$UUID",
+  "aid": "0",
+  "net": "tcp",
+  "type": "none",
+  "host": "",
+  "path": "",
+  "tls": ""
+}
+EOF
+  )
+  VMESS_LINK="vmess://$(echo "$VMESS_JSON" | base64 -w 0)"
+  echo -e "🔗 VMess 链接：\n$VMESS_LINK"
 done
 
 (systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
 
-# list_users.sh
 cat <<EOF > /root/list_users.sh
 #!/bin/bash
 jq -r '.inbounds[] | select(.protocol=="vmess") | "监听IP: \(.listen // "0.0.0.0")\\n端口: \(.port)\\nUUID: \(.settings.clients[0].id)\\n----"' "$CONFIG"
 EOF
 chmod +x /root/list_users.sh
 
-# delete_user.sh
 cat <<EOF > /root/delete_user.sh
 #!/bin/bash
 read -p "请输入要删除的端口号: " PORT
