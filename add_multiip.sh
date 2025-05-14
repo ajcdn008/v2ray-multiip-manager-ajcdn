@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# --- 自动识别服务器所有公网 IP 并批量添加 V2Ray 用户（兼容 secondary IP）+ 生成 VMess 链接 ---
+# --- 指定 IP 添加单个 VMess 用户脚本 add_user.sh ---
 
 CONFIG=""
 POSSIBLE_PATHS=(
@@ -22,15 +22,14 @@ if [ -z "$CONFIG" ]; then
   exit 1
 fi
 
-IP_LIST=$(ip -4 addr | grep -oP 'inet \K[0-9.]+(?=/)' | grep -vE '^(127|10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)')
-
-if [ -z "$IP_LIST" ]; then
-  echo "❌ 未检测到公网 IP，请确认服务器绑定了多 IP"
-  echo "--- 当前 ip a 输出如下 ---"
-  ip a
+# 判断参数
+TARGET_IP="$1"
+if [ -z "$TARGET_IP" ]; then
+  echo "❌ 请传入目标 IP，例如：bash /root/add_user.sh 27.124.46.63"
   exit 1
 fi
 
+# 检查 jq 是否安装
 if ! command -v jq &> /dev/null; then
   echo "[📦] 正在安装 jq..."
   if command -v yum &> /dev/null; then
@@ -43,33 +42,32 @@ if ! command -v jq &> /dev/null; then
   fi
 fi
 
-for IP in $IP_LIST; do
-  echo "\n🔧 为 IP [$IP] 添加 VPN 用户..."
-  UUID=$(cat /proc/sys/kernel/random/uuid)
-  PORT=$((20000 + RANDOM % 40000))
+# 添加用户
+UUID=$(cat /proc/sys/kernel/random/uuid)
+PORT=$((20000 + RANDOM % 40000))
 
-  jq --arg uuid "$UUID" --argjson port "$PORT" --arg listen "$IP" \
-  '.inbounds += [{
-    "port": $port,
-    "listen": $listen,
-    "protocol": "vmess",
-    "settings": {
-      "clients": [{ "id": $uuid, "alterId": 0 }]
-    },
-    "streamSettings": {
-      "network": "tcp",
-      "security": "none"
-    }
-  }]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
+jq --arg uuid "$UUID" --argjson port "$PORT" --arg listen "$TARGET_IP" \
+'.inbounds += [{
+  "port": $port,
+  "listen": $listen,
+  "protocol": "vmess",
+  "settings": {
+    "clients": [{ "id": $uuid, "alterId": 0 }]
+  },
+  "streamSettings": {
+    "network": "tcp",
+    "security": "none"
+  }
+}]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
 
-  echo "✅ 已添加：$IP:$PORT UUID=$UUID"
+(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
 
-  # 生成 VMess 链接 JSON
-  VMESS_JSON=$(cat <<EOF
+# 生成 VMess 链接
+VMESS_JSON=$(cat <<EOF
 {
   "v": "2",
-  "ps": "$IP-$PORT",
-  "add": "$IP",
+  "ps": "$TARGET_IP-$PORT",
+  "add": "$TARGET_IP",
   "port": "$PORT",
   "id": "$UUID",
   "aid": "0",
@@ -80,28 +78,12 @@ for IP in $IP_LIST; do
   "tls": ""
 }
 EOF
-  )
-  VMESS_LINK="vmess://$(echo "$VMESS_JSON" | base64 -w 0)"
-  echo -e "🔗 VMess 链接：\n$VMESS_LINK"
-done
+)
+VMESS_LINK="vmess://$(echo "$VMESS_JSON" | base64 -w 0)"
 
-(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
-
-cat <<EOF > /root/list_users.sh
-#!/bin/bash
-jq -r '.inbounds[] | select(.protocol=="vmess") | "监听IP: \(.listen // "0.0.0.0")\\n端口: \(.port)\\nUUID: \(.settings.clients[0].id)\\n----"' "$CONFIG"
-EOF
-chmod +x /root/list_users.sh
-
-cat <<EOF > /root/delete_user.sh
-#!/bin/bash
-read -p "请输入要删除的端口号: " PORT
-jq 'del(.inbounds[] | select(.port == '"\$PORT"'))' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
-(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
-echo "✅ 已删除端口 \$PORT 的用户"
-EOF
-chmod +x /root/delete_user.sh
-
-echo -e "\n🎉 所有公网 IP 用户已创建完毕，可用以下命令管理："
-echo "📄 查看用户：bash /root/list_users.sh"
-echo "❌ 删除用户：bash /root/delete_user.sh"
+# 输出结果
+echo "✅ 成功添加新用户："
+echo "IP: $TARGET_IP"
+echo "端口: $PORT"
+echo "UUID: $UUID"
+echo -e "🔗 VMess 链接：\n$VMESS_LINK"
