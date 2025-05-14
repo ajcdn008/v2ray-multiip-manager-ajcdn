@@ -1,0 +1,99 @@
+#!/bin/bash
+
+# --- 自动识别服务器绑定公网 IP，并批量创建 V2Ray 用户 ---
+# 无需手动填写 IP_LIST
+
+# 自动寻找 config.json 路径
+CONFIG=""
+POSSIBLE_PATHS=(
+  "/usr/local/etc/v2ray/config.json"
+  "/etc/v2ray/config.json"
+  "/usr/local/etc/xray/config.json"
+  "/etc/xray/config.json"
+)
+
+for path in "${POSSIBLE_PATHS[@]}"; do
+  if [ -f "$path" ]; then
+    CONFIG="$path"
+    break
+  fi
+done
+
+if [ -z "$CONFIG" ]; then
+  echo "❌ 未找到 config.json，请先安装并配置好 V2Ray/Xray"
+  exit 1
+fi
+
+# 获取所有公网 IP（排除回环、本地、内网）
+IP_LIST=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -vE '^(127|10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)')
+
+if [ -z "$IP_LIST" ]; then
+  echo "❌ 未检测到公网 IP，请确认服务器绑定了多 IP"
+  exit 1
+fi
+
+# 安装 jq（如未安装）
+if ! command -v jq &> /dev/null; then
+  echo "[📦] 安装 jq..."
+  if command -v yum &> /dev/null; then
+    yum install -y jq || { echo "❌ 安装 jq 失败"; exit 1; }
+  elif command -v apt &> /dev/null; then
+    apt update && apt install -y jq || { echo "❌ 安装 jq 失败"; exit 1; }
+  else
+    echo "❌ 不支持的系统，请手动安装 jq"
+    exit 1
+  fi
+fi
+
+# 遍历每个公网 IP，添加用户
+for IP in $IP_LIST; do
+  echo "\n🔧 正在为 IP [$IP] 添加 VPN 用户..."
+  UUID=$(cat /proc/sys/kernel/random/uuid)
+  PORT=$((20000 + RANDOM % 40000))
+
+  jq --arg uuid "$UUID" \
+     --argjson port "$PORT" \
+     --arg listen "$IP" \
+  '.inbounds += [{
+    "port": $port,
+    "listen": $listen,
+    "protocol": "vmess",
+    "settings": {
+      "clients": [{
+        "id": $uuid,
+        "alterId": 0
+      }]
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "none"
+    }
+  }]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
+
+  echo "✅ 已添加：IP=$IP 端口=$PORT UUID=$UUID"
+  sleep 1
+done
+
+# 重启服务
+(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
+
+# 生成 list_users.sh
+cat <<EOF > /root/list_users.sh
+#!/bin/bash
+jq -r '.inbounds[] | select(.protocol=="vmess") | "监听IP: \(.listen // "0.0.0.0")\\n端口: \(.port)\\nUUID: \(.settings.clients[0].id)\\n----"' "$CONFIG"
+EOF
+chmod +x /root/list_users.sh
+
+# 生成 delete_user.sh
+cat <<EOF > /root/delete_user.sh
+#!/bin/bash
+read -p "请输入要删除的端口号: " PORT
+jq 'del(.inbounds[] | select(.port == '"\$PORT"'))' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
+(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
+echo "✅ 已删除端口 \$PORT 的用户"
+EOF
+chmod +x /root/delete_user.sh
+
+echo -e "\n🎉 所有公网 IP 用户已创建完毕！可使用以下命令管理："
+echo "📄 查看所有：bash /root/list_users.sh"
+echo "❌ 删除用户：bash /root/delete_user.sh"
