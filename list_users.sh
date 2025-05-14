@@ -16,11 +16,12 @@ for path in "${POSSIBLE_PATHS[@]}"; do
 done
 
 if [ -z "$CONFIG" ]; then
-  echo "未找到 config.json 文件，请确认 V2Ray 是否已安装"
+  echo "❌ 未找到 config.json，请先安装并配置好 V2Ray/Xray"
   exit 1
 fi
 
-echo "当前所有用户配置如下："
-echo "端口  |  UUID"
-echo "-----------------------------"
+echo -e "当前所有用户配置如下："
+echo -e "端口  |  UUID"
+echo "---------------------------"
+
 jq -r '.inbounds[] | select(.protocol=="vmess") | "\(.port)  |  \(.settings.clients[0].id)"' "$CONFIG"
