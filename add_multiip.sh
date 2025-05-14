@@ -1,16 +1,14 @@
 #!/bin/bash
 
-# --- 为指定 IP 添加一个 VMess 用户，含二维码 ---
-
-CONFIG=""
-POSSIBLE_PATHS=(
+CONFIG_PATHS=(
   "/usr/local/etc/v2ray/config.json"
   "/etc/v2ray/config.json"
   "/usr/local/etc/xray/config.json"
   "/etc/xray/config.json"
 )
 
-for path in "${POSSIBLE_PATHS[@]}"; do
+# 找到配置文件
+for path in "${CONFIG_PATHS[@]}"; do
   if [ -f "$path" ]; then
     CONFIG="$path"
     break
@@ -18,63 +16,38 @@ for path in "${POSSIBLE_PATHS[@]}"; do
 done
 
 if [ -z "$CONFIG" ]; then
-  echo "❌ 未找到 config.json，请先安装并配置好 V2Ray/Xray"
+  echo "❌ 未找到 config.json，请先安装 V2Ray 或 Xray"
   exit 1
 fi
 
-# 获取参数（指定IP）
-TARGET_IP="$1"
-if [ -z "$TARGET_IP" ]; then
-  echo "用法: bash add_multiip.sh 你的公网IP"
-  exit 1
-fi
+# 获取所有公网 IP
+PUB_IPS=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -vE '^127|^192\.168|^10\.|^172\.(1[6-9]|2[0-9]|3[0-1])')
 
-# 检查依赖
-for cmd in jq qrencode; do
-  if ! command -v $cmd &>/dev/null; then
-    echo "[📦] 安装依赖：$cmd..."
-    if command -v apt &>/dev/null; then
-      apt update && apt install -y $cmd
-    elif command -v yum &>/dev/null; then
-      yum install -y $cmd
-    else
-      echo "❌ 请手动安装 $cmd"
-      exit 1
-    fi
-  fi
+for ip in $PUB_IPS; do
+  UUID=$(cat /proc/sys/kernel/random/uuid)
+  PORT=$((20000 + RANDOM % 40000))
 
-  if ! command -v $cmd &>/dev/null; then
-    echo "❌ $cmd 安装失败"
-    exit 1
-  fi
+  jq --arg uuid "$UUID" --argjson port "$PORT" --arg listen "$ip" \
+  '.inbounds += [{
+    "port": $port,
+    "listen": $listen,
+    "protocol": "vmess",
+    "settings": {
+      "clients": [{ "id": $uuid, "alterId": 0 }]
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "none"
+    }
+  }]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
 
-  echo "✅ $cmd 已安装"
-done
+  (systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
 
-UUID=$(cat /proc/sys/kernel/random/uuid)
-PORT=$((20000 + RANDOM % 40000))
-
-jq --arg uuid "$UUID" --argjson port "$PORT" --arg listen "$TARGET_IP" \
-'.inbounds += [{
-  "port": $port,
-  "listen": $listen,
-  "protocol": "vmess",
-  "settings": {
-    "clients": [{ "id": $uuid, "alterId": 0 }]
-  },
-  "streamSettings": {
-    "network": "tcp",
-    "security": "none"
-  }
-}]' "$CONFIG" > /tmp/config_tmp.json && mv /tmp/config_tmp.json "$CONFIG"
-
-(systemctl restart v2ray 2>/dev/null || systemctl restart xray 2>/dev/null)
-
-VMESS_JSON=$(cat <<EOF
+  VMESS_JSON=$(cat <<EOF
 {
   "v": "2",
-  "ps": "$TARGET_IP:$PORT",
-  "add": "$TARGET_IP",
+  "ps": "$ip-$PORT",
+  "add": "$ip",
   "port": "$PORT",
   "id": "$UUID",
   "aid": "0",
@@ -86,13 +59,7 @@ VMESS_JSON=$(cat <<EOF
 }
 EOF
 )
-VMESS_LINK="vmess://$(echo "$VMESS_JSON" | base64 -w 0)"
-echo "$VMESS_LINK" >> /root/vmess_links.txt
-qrencode -o "/root/${TARGET_IP//./_}_$PORT.png" "$VMESS_LINK"
-
-echo "✅ 添加成功！"
-echo "IP: $TARGET_IP"
-echo "端口: $PORT"
-echo "UUID: $UUID"
-echo -e "🔗 VMess 链接：\n$VMESS_LINK"
-echo "🖼️ 二维码已保存：/root/${TARGET_IP//./_}_$PORT.png"
+  VMESS_LINK="vmess://$(echo "$VMESS_JSON" | base64 -w 0)"
+  echo "✅ 已添加: $ip:$PORT UUID=$UUID"
+  echo "🔗 $VMESS_LINK"
+done
